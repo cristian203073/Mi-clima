@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mi Clima</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mi Clima">
+<meta name="theme-color" content="#1f6fd1">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root { --arriba:#1f6fd1; --abajo:#0f3f86; --tarjeta:rgba(255,255,255,.14); --lluvia:#a8e1ff; }
+  body.noche { --arriba:#1b2450; --abajo:#090d22; --tarjeta:rgba(255,255,255,.09); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html { background:var(--abajo); }
+  body {
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color:#fff; min-height:100vh; min-height:100dvh;
+    background:linear-gradient(var(--arriba), var(--abajo));
+    padding:calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 20px);
+  }
+  main { max-width:480px; margin:0 auto; }
+  header { text-align:center; padding:12px 0 24px; }
+  h1 { font-size:28px; font-weight:600; }
+  #icono { font-size:64px; margin-top:12px; line-height:1.2; }
+  #temp { font-size:104px; font-weight:200; line-height:1.05; font-variant-numeric:tabular-nums; }
+  #estado { font-size:20px; }
+  #sensacion { opacity:.8; margin-top:4px; }
+  section { background:var(--tarjeta); border-radius:20px; padding:16px; margin-bottom:12px; }
+  h2 { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; opacity:.75; margin-bottom:8px; }
+  #prob { font-size:40px; font-weight:300; color:var(--lluvia); }
+  #resumen { opacity:.9; }
+  ul { list-style:none; }
+  li { display:grid; grid-template-columns:64px 36px 1fr 48px; align-items:center; gap:8px;
+       padding:11px 0; border-top:1px solid rgba(255,255,255,.15); font-variant-numeric:tabular-nums; }
+  li .ic { font-size:22px; }
+  li .pp { color:var(--lluvia); font-size:15px; }
+  li .gr { text-align:right; font-size:19px; font-weight:500; }
+  #aviso { text-align:center; }
+  button { display:block; width:100%; border:0; border-radius:14px; padding:14px; font-family:inherit; font-size:17px; font-weight:600;
+           color:#0f3f86; background:#fff; margin-top:4px; }
+  button:disabled { opacity:.6; }
+  footer { text-align:center; font-size:12px; opacity:.7; margin-top:14px; line-height:1.7; }
+  a { color:inherit; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="aviso" role="status">Buscando tu ubicación…</section>
+
+  <div id="contenido" hidden>
+    <header>
+      <h1 id="ciudad">Tu ubicación</h1>
+      <div id="icono" aria-hidden="true"></div>
+      <div id="temp"></div>
+      <div id="estado"></div>
+      <div id="sensacion"></div>
+    </header>
+    <section>
+      <h2>Lluvia en esta hora</h2>
+      <div id="prob"></div>
+      <p id="resumen"></p>
+    </section>
+    <section>
+      <h2>Pronóstico por hora</h2>
+      <ul id="horas"></ul>
+    </section>
+  </div>
+
+  <button id="actualizar">Actualizar</button>
+  <footer>
+    <div id="hora"></div>
+    Clima: <a href="https://open-meteo.com/">Open-Meteo.com</a> (CC BY 4.0) · Ciudad: <a href="https://www.bigdatacloud.com/">BigDataCloud</a>
+  </footer>
+</main>
+
+<script>
+const CLAVE = "mi-clima";
+const CADA = 10 * 60 * 1000;
+const $ = id => document.getElementById(id);
+let datos = null, cargando = false, ultimoIntento = 0;
+
+function describir(codigo, dia) {
+  const sol = dia ? "☀️" : "🌙";
+  if (codigo === 0) return [sol, "Despejado"];
+  if (codigo === 1) return [dia ? "🌤️" : "🌙", "Mayormente despejado"];
+  if (codigo === 2) return [dia ? "⛅" : "☁️", "Parcialmente nublado"];
+  if (codigo === 3) return ["☁️", "Nublado"];
+  if (codigo === 45 || codigo === 48) return ["🌫️", "Niebla"];
+  if (codigo >= 51 && codigo <= 57) return ["🌦️", "Llovizna"];
+  if (codigo >= 61 && codigo <= 67) return ["🌧️", "Lluvia"];
+  if (codigo >= 71 && codigo <= 77) return ["🌨️", "Nieve"];
+  if (codigo >= 80 && codigo <= 82) return ["🌦️", "Chaparrones"];
+  if (codigo === 85 || codigo === 86) return ["🌨️", "Chaparrones de nieve"];
+  if (codigo >= 95) return ["⛈️", "Tormenta"];
+  return ["🌡️", "Sin descripción"];
+}
+
+const grados = n => n == null ? "–" : Math.round(n) + "°";
+const porciento = n => n == null ? "–" : Math.round(n) + "%";
+// Hora local del lugar consultado
+const horaLocal = (t, desfase) =>
+  String(new Date((t + desfase) * 1000).getUTCHours()).padStart(2, "0") + ":00";
+
+function aviso(texto) {
+  $("aviso").textContent = texto;
+  $("aviso").hidden = !texto;
+}
+
+function pintar() {
+  const { clima, ciudad, momento } = datos;
+  const c = clima.current, h = clima.hourly, desfase = clima.utc_offset_seconds;
+  const [icono, estado] = describir(c.weather_code, c.is_day);
+
+  document.body.classList.toggle("noche", !c.is_day);
+  $("ciudad").textContent = ciudad || "Tu ubicación";
+  $("icono").textContent = icono;
+  $("temp").textContent = grados(c.temperature_2m);
+  $("estado").textContent = estado;
+  $("sensacion").textContent = "Sensación térmica " + grados(c.apparent_temperature);
+
+  // La probabilidad de Open-Meteo corresponde a la hora anterior a cada marca,
+  // por eso el tramo que empieza en time[i] usa el valor de i + 1.
+  const ahora = Date.now() / 1000;
+  const tramos = [];
+  for (let i = 0; i + 1 < h.time.length; i++) {
+    if (h.time[i + 1] <= ahora) continue;   // hora ya pasada
+    tramos.push({ t: h.time[i], temp: h.temperature_2m[i], codigo: h.weather_code[i],
+                  dia: h.is_day[i], lluvia: h.precipitation_probability[i + 1] });
+    if (tramos.length === 24) break;
+  }
+
+  $("prob").textContent = porciento(tramos[0]?.lluvia);
+  const proximas = tramos.slice(0, 12).filter(x => x.lluvia != null);
+  if (proximas.length) {
+    const pico = proximas.reduce((a, b) => b.lluvia > a.lluvia ? b : a);
+    $("resumen").textContent = pico.lluvia < 20
+      ? "Poca probabilidad de lluvia en las próximas 12 horas."
+      : `Máximo en las próximas 12 horas: ${porciento(pico.lluvia)}, desde las ${horaLocal(pico.t, desfase)}.`;
+  } else {
+    $("resumen").textContent = "Sin datos de lluvia.";
+  }
+
+  $("horas").replaceChildren(...tramos.map((x, i) => {
+    const li = document.createElement("li");
+    const [ic, txt] = describir(x.codigo, x.dia);
+    const celdas = [
+      ["", i === 0 ? "Ahora" : horaLocal(x.t, desfase)],
+      ["ic", ic],
+      ["pp", "💧 " + porciento(x.lluvia)],
+      ["gr", grados(i === 0 ? c.temperature_2m : x.temp)]
+    ];
+    for (const [clase, valor] of celdas) {
+      const s = document.createElement("span");
+      s.className = clase; s.textContent = valor;
+      if (clase === "ic") { s.title = txt; s.setAttribute("role", "img"); s.setAttribute("aria-label", txt); }
+      li.append(s);
+    }
+    return li;
+  }));
+
+  $("hora").textContent = "Actualizado: " + new Date(momento).toLocaleString("es",
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  $("contenido").hidden = false;
+}
+
+async function pedir(url) {
+  const control = new AbortController();
+  const reloj = setTimeout(() => control.abort(), 12000);
+  try {
+    const r = await fetch(url, { signal: control.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(reloj); }
+}
+
+const ubicar = () => new Promise((ok, mal) => {
+  if (!navigator.geolocation) return mal({ code: 0 });
+  navigator.geolocation.getCurrentPosition(ok, mal, { timeout: 15000, maximumAge: 5 * 60 * 1000 });
+});
+
+async function actualizar() {
+  if (cargando) return;
+  cargando = true; ultimoIntento = Date.now();
+  $("actualizar").disabled = true;
+  $("actualizar").textContent = "Actualizando…";
+  try {
+    let pos;
+    try { pos = await ubicar(); }
+    catch (e) {
+      aviso(e.code === 1
+        ? "No tengo permiso para ver tu ubicación. En el iPhone ve a Ajustes → Privacidad y seguridad → Localización, actívala y permítela para Safari. Luego toca Actualizar."
+        : "No pude encontrar tu ubicación. Revisa que la localización esté activada y toca Actualizar.");
+      return;
+    }
+    const { latitude: lat, longitude: lon } = pos.coords;
+    if (!datos) aviso("Cargando el clima…");
+
+    const urlClima = "https://api.open-meteo.com/v1/forecast?" + new URLSearchParams({
+      latitude: lat.toFixed(4), longitude: lon.toFixed(4),
+      current: "temperature_2m,apparent_temperature,weather_code,is_day",
+      hourly: "temperature_2m,precipitation_probability,weather_code,is_day",
+      forecast_hours: "25", timezone: "auto", timeformat: "unixtime"
+    });
+    const urlCiudad = "https://api.bigdatacloud.net/data/reverse-geocode-client?" +
+      new URLSearchParams({ latitude: lat, longitude: lon, localityLanguage: "es" });
+
+    // Si falla el nombre de la ciudad, el clima se muestra igual
+    const [clima, lugar] = await Promise.all([pedir(urlClima), pedir(urlCiudad).catch(() => null)]);
+    datos = { clima, ciudad: lugar?.city || lugar?.locality || "", momento: Date.now() };
+    pintar(); aviso("");
+    try { localStorage.setItem(CLAVE, JSON.stringify(datos)); } catch {}
+  } catch {
+    aviso(datos
+      ? "No pude actualizar. Estás viendo los últimos datos guardados."
+      : "No pude cargar el clima. Revisa tu conexión y toca Actualizar.");
+  } finally {
+    cargando = false;
+    $("actualizar").disabled = false;
+    $("actualizar").textContent = "Actualizar";
+  }
+}
+
+// Muestra lo último guardado mientras llegan datos nuevos
+try {
+  const guardado = JSON.parse(localStorage.getItem(CLAVE));
+  if (guardado && Date.now() - guardado.momento < 6 * 3600 * 1000) {
+    datos = guardado; pintar(); aviso("Actualizando datos guardados…");
+  }
+} catch { datos = null; }
+
+$("actualizar").addEventListener("click", actualizar);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - ultimoIntento > 60 * 1000) actualizar();
+});
+setInterval(() => { if (!document.hidden) actualizar(); }, CADA);
+actualizar();
+</script>
+</body>
+</html>

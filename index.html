@@ -45,6 +45,14 @@
   footer { text-align:center; font-size:12px; opacity:.7; margin-top:14px; line-height:1.7; }
   a { color:inherit; }
   [hidden] { display:none !important; }
+  :root:has(.noche) { --abajo:#090d22; }
+  #horas { display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; }
+  #horas li { flex:0 0 76px; display:flex; flex-direction:column; gap:8px; padding:16px 4px;
+              border:0; border-radius:38px; background:var(--tarjeta); }
+  #horas li:first-child { background:rgba(255,255,255,.28); }
+  #horas li .ic { font-size:30px; line-height:1.2; }
+  #horas li .pp { font-size:13px; white-space:nowrap; }
+  #horas li .gr { font-size:22px; }
 </style>
 </head>
 <body>
